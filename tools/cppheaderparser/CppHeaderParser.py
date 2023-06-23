@@ -125,10 +125,7 @@ def t_COMMENT_SINGLELINE(t):
     if t.value.startswith("///") or t.value.startswith("//!"):
         if doxygenCommentCache:
             doxygenCommentCache += "\n"
-        if t.value.endswith("\n"):
-            doxygenCommentCache += t.value[:-1]
-        else:
-            doxygenCommentCache += t.value
+        doxygenCommentCache += t.value[:-1] if t.value.endswith("\n") else t.value
     t.lexer.lineno += len([a for a in t.value if a=="\n"])
 t_ASTERISK = r'\*'
 t_MINUS = r'\-'
@@ -182,8 +179,9 @@ def debug_print(arg):
 def trace_print(*arg):
     global debug_trace
     if debug_trace:
-        sys.stdout.write("[%s] "%(inspect.currentframe().f_back.f_lineno))
-        for a in arg: sys.stdout.write("%s "%a)
+        sys.stdout.write(f"[{inspect.currentframe().f_back.f_lineno}] ")
+        for a in arg:
+            sys.stdout.write(f"{a} ")
         sys.stdout.write("\n")
 
 supportedAccessSpecifier = [
@@ -204,11 +202,7 @@ parseHistory = []
 
 def is_namespace(nameStack):
     """Determines if a namespace is being specified"""
-    if len(nameStack) == 0:
-        return False
-    if nameStack[0] == "namespace":
-        return True
-    return False
+    return False if len(nameStack) == 0 else nameStack[0] == "namespace"
 
 def is_enum_namestack(nameStack):
     """Determines if a namestack is an enum namestack"""
@@ -216,14 +210,34 @@ def is_enum_namestack(nameStack):
         return False
     if nameStack[0] == "enum":
         return True
-    if len(nameStack) > 1 and nameStack[0] == "typedef" and nameStack[1] == "enum":
-        return True
-    return False
+    return (
+        len(nameStack) > 1
+        and nameStack[0] == "typedef"
+        and nameStack[1] == "enum"
+    )
 
 def is_fundamental(s):
-    for a in s.split():
-        if a not in ["size_t", "struct", "union", "unsigned", "signed", "bool", "char", "short", "int", "float", "double", "long", "void", "*", "&"]: return False
-    return True
+    return all(
+        a
+        in [
+            "size_t",
+            "struct",
+            "union",
+            "unsigned",
+            "signed",
+            "bool",
+            "char",
+            "short",
+            "int",
+            "float",
+            "double",
+            "long",
+            "void",
+            "*",
+            "&",
+        ]
+        for a in s.split()
+    )
 
 def is_function_pointer_stack(stack):
     """Count how many non-nested paranthesis are in the stack.  Useful for determining if a stack is a function pointer"""
@@ -241,28 +255,20 @@ def is_function_pointer_stack(stack):
         elif e == "*" and last_e == "(" and paren_count == 0 and paren_depth == 1:
             star_after_first_paren = True
         last_e = e
-        
-    if star_after_first_paren and paren_count == 2:
-        return True
-    else:
-        return False
+
+    return bool(star_after_first_paren and paren_count == 2)
 
 def is_method_namestack(stack):
     r = False
     if '(' not in stack: r = False
     elif stack[0] == 'typedef': r = False    # TODO deal with typedef function prototypes
-    #elif '=' in stack and stack.index('=') < stack.index('(') and stack[stack.index('=')-1] != 'operator': r = False    #disabled July6th - allow all operators
     elif 'operator' in stack: r = True    # allow all operators
     elif '{' in stack and stack.index('{') < stack.index('('): r = False    # struct that looks like a method/class
     elif '[' in stack and stack.index('[') < stack.index('('): r = False    # array with sizeof()
-    elif '(' in stack and ')' in stack:
-        if '{' in stack and '}' in stack: r = True
+    elif ')' in stack:
+        if '{' in stack and '}' in stack or stack[-1] != ';' and '{' in stack: r = True
         elif stack[-1] == ';':
-            if is_function_pointer_stack(stack):
-                r = False
-            else:
-                r = True
-        elif '{' in stack: r = True    # ideally we catch both braces... TODO
+            r = not is_function_pointer_stack(stack)
     else: r = False
     #Test for case of property set to something with parens such as "static const int CONST_A = (1 << 7) - 1;"
     if r and "(" in stack and "=" in stack and 'operator' not in stack:
@@ -303,7 +309,7 @@ def filter_out_attribute_keyword(stack):
     """Strips __attribute__ and its parenthetical expression from the stack"""
     if "__attribute__" not in stack: return stack
     try:
-        debug_print("Stripping __attribute__ from %s"% stack)
+        debug_print(f"Stripping __attribute__ from {stack}")
         attr_index = stack.index("__attribute__")
         attr_end = attr_index + 1 #Assuming not followed by parenthetical expression which wont happen
         #Find final paren
@@ -318,8 +324,8 @@ def filter_out_attribute_keyword(stack):
                     if paren_count == 0:
                         attr_end = i + 1
                         break
-        new_stack = stack[0:attr_index] + stack[attr_end:]
-        debug_print("stripped stack is %s"% new_stack)
+        new_stack = stack[:attr_index] + stack[attr_end:]
+        debug_print(f"stripped stack is {new_stack}")
         return new_stack
     except:
         return stack
@@ -400,17 +406,19 @@ class CppClass(dict):
 
     def get_all_pure_virtual_methods( self ):
         r = {}
-        for typ in supportedAccessSpecifier: r.update(self.get_pure_virtual_methods(typ))        # returns dict
+        for typ in supportedAccessSpecifier:
+            r |= self.get_pure_virtual_methods(typ)
         return r
 
 
     def get_method_names( self, type='public' ): return [ meth['name'] for meth in self['methods'][ type ] ]
 
     def get_pure_virtual_methods( self, type='public' ):
-        r = {}
-        for meth in self['methods'][ type ]:
-            if meth['pure_virtual']: r[ meth['name'] ] = meth
-        return r
+        return {
+            meth['name']: meth
+            for meth in self['methods'][type]
+            if meth['pure_virtual']
+        }
 
     def __init__(self, nameStack, curTemplate):
         self['nested_classes'] = []
@@ -422,22 +430,22 @@ class CppClass(dict):
         self._public_forward_declares = []
         self['namespace'] = ""
 
-        debug_print( "Class:    %s"%nameStack )
-        debug_print( "Template: %s"%curTemplate)
-        
+        debug_print(f"Class:    {nameStack}")
+        debug_print(f"Template: {curTemplate}")
+
         if (len(nameStack) < 2):
             nameStack.insert(1, "")#anonymous struct
         global doxygenCommentCache
         if len(doxygenCommentCache):
             self["doxygen"] = doxygenCommentCache
             doxygenCommentCache = ""
-        
+
         if "::" in "".join(nameStack):
-            #Re-Join class paths (ex  ['class', 'Bar', ':', ':', 'Foo'] -> ['class', 'Bar::Foo'] 
+            #Re-Join class paths (ex  ['class', 'Bar', ':', ':', 'Foo'] -> ['class', 'Bar::Foo']
             try:
                 new_nameStack = []
                 for name in nameStack:
-                    if len(new_nameStack) == 0: 
+                    if not new_nameStack: 
                         new_nameStack.append(name)
                     elif name == ":" and new_nameStack[-1].endswith(":"):
                         new_nameStack[-1] += name
@@ -449,7 +457,7 @@ class CppClass(dict):
                 trace_print("Convert from namestack\n %s\nto\n%s"%(nameStack, new_nameStack))
                 nameStack = new_nameStack
             except: pass
-        
+
         # Handle final specifier
         self["final"] = False
         try:
@@ -459,10 +467,10 @@ class CppClass(dict):
             self["final"] = True
             trace_print("final")
         except: pass
-        
+
         self["name"] = nameStack[1]
         self["line_number"] = detect_lineno(nameStack[0])
-        
+
         #Handle template classes
         if len(nameStack) > 3 and nameStack[2].startswith("<"):
             open_template_count = 0
@@ -515,31 +523,30 @@ class CppClass(dict):
                     tmpInheritClass["class"] = tmpStack[2]
                     tmpInheritClass["virtual"] = True
                 else:
-                    warning_print( "Warning: can not parse inheriting class %s"%(" ".join(tmpStack)))
-                    if '>' in tmpStack: pass    # allow skip templates for now
-                    else: raise NotImplemented
+                    warning_print(f'Warning: can not parse inheriting class {" ".join(tmpStack)}')
+                    if '>' not in tmpStack:
+                        raise NotImplemented
 
                 if 'class' in tmpInheritClass: inheritList.append(tmpInheritClass)
 
         elif nameStack.count(':') == 2: self['parent'] = self['name']; self['name'] = nameStack[-1]
-
         elif nameStack.count(':') > 2 and nameStack[0] in ("class", "struct"):
             tmpStack = nameStack[nameStack.index(":") + 1:]
-            
+
             superTmpStack = [[]]
             for tok in tmpStack:
                 if tok == ',':
                     superTmpStack.append([])
                 else:
                     superTmpStack[-1].append(tok)
-            
+
             for tmpStack in superTmpStack:
                 tmpInheritClass = {"access":"private"}
-                
+
                 if len(tmpStack) and tmpStack[0] in supportedAccessSpecifier:
                     tmpInheritClass["access"] = tmpStack[0]
                     tmpStack = tmpStack[1:]
-                
+
                 inheritNSStack = []
                 while len(tmpStack) > 3:
                     if tmpStack[0] == ':': break;
@@ -556,7 +563,7 @@ class CppClass(dict):
 
         if curTemplate:
             self["template"] = curTemplate
-            trace_print("Setting template to '%s'"%self["template"])
+            trace_print(f"""Setting template to '{self["template"]}'""")
 
         methodAccessSpecificList = {}
         propertyAccessSpecificList = {}
@@ -564,7 +571,7 @@ class CppClass(dict):
         structAccessSpecificList = {}
         typedefAccessSpecificList = {}
         forwardAccessSpecificList = {}
-        
+
         for accessSpecifier in supportedAccessSpecifier:
             methodAccessSpecificList[accessSpecifier] = []
             propertyAccessSpecificList[accessSpecifier] = []
@@ -583,13 +590,10 @@ class CppClass(dict):
  
     def show(self):
         """Convert class to a string"""
-        namespace_prefix = ""
-        if self["namespace"]: namespace_prefix = self["namespace"] + "::"
-        rtn = "%s %s"%(self["declaration_method"], namespace_prefix + self["name"])
+        namespace_prefix = self["namespace"] + "::" if self["namespace"] else ""
+        rtn = f'{self["declaration_method"]} {namespace_prefix + self["name"]}'
         if self["final"]: rtn += " final"
-        if self['abstract']: rtn += '    (abstract)\n'
-        else: rtn += '\n'
-
+        rtn += '    (abstract)\n' if self['abstract'] else '\n'
         if 'doxygen' in list(self.keys()): rtn += self["doxygen"] + '\n'
         if 'parent' in list(self.keys()) and self['parent']: rtn += 'parent class: ' + self['parent'] + '\n'
 
@@ -597,7 +601,7 @@ class CppClass(dict):
             rtn += "  Inherits: "
             for inheritClass in self["inherits"]:
                 if inheritClass["virtual"]: rtn += "virtual "
-                rtn += "%s %s, "%(inheritClass["access"], inheritClass["class"])
+                rtn += f'{inheritClass["access"]} {inheritClass["class"]}, '
             rtn += "\n"
         rtn += "  {\n"
         for accessSpecifier in supportedAccessSpecifier:
@@ -622,13 +626,10 @@ class CppClass(dict):
     
     def __str__(self):
         """Convert class to a string"""
-        namespace_prefix = ""
-        if self["namespace"]: namespace_prefix = self["namespace"] + "::"
-        rtn = "%s %s"%(self["declaration_method"], namespace_prefix + self["name"])
+        namespace_prefix = self["namespace"] + "::" if self["namespace"] else ""
+        rtn = f'{self["declaration_method"]} {namespace_prefix + self["name"]}'
         if self["final"]: rtn += " final"
-        if self['abstract']: rtn += '    (abstract)\n'
-        else: rtn += '\n'
-
+        rtn += '    (abstract)\n' if self['abstract'] else '\n'
         if 'doxygen' in list(self.keys()): rtn += self["doxygen"] + '\n'
         if 'parent' in list(self.keys()) and self['parent']: rtn += 'parent class: ' + self['parent'] + '\n'
 
@@ -636,7 +637,7 @@ class CppClass(dict):
             rtn += "Inherits: "
             for inheritClass in self["inherits"]:
                 if inheritClass.get("virtual", False): rtn += "virtual "
-                rtn += "%s %s, "%(inheritClass["access"], inheritClass["class"])
+                rtn += f'{inheritClass["access"]} {inheritClass["class"]}, '
             rtn += "\n"
         rtn += "{\n"
         for accessSpecifier in supportedAccessSpecifier:
@@ -682,7 +683,7 @@ class CppUnion( CppClass ):
         self["members"] = self["properties"]["public"]
     
     def transform_to_union_keys(self):
-        print("union keys: %s"%list(self.keys()))
+        print(f"union keys: {list(self.keys())}")
         for key in ['inherits', 'parent', 'abstract', 'namespace', 'typedefs', 'methods']:
             del self[key] 
         
@@ -693,12 +694,9 @@ class CppUnion( CppClass ):
     
     def __str__(self):
         """Convert class to a string"""
-        namespace_prefix = ""
-        if self["namespace"]: namespace_prefix = self["namespace"] + "::"
-        rtn = "%s %s"%(self["declaration_method"], namespace_prefix + self["name"])
-        if self['abstract']: rtn += '    (abstract)\n'
-        else: rtn += '\n'
-
+        namespace_prefix = self["namespace"] + "::" if self["namespace"] else ""
+        rtn = f'{self["declaration_method"]} {namespace_prefix + self["name"]}'
+        rtn += '    (abstract)\n' if self['abstract'] else '\n'
         if 'doxygen' in list(self.keys()): rtn += self["doxygen"] + '\n'
         if 'parent' in list(self.keys()) and self['parent']: rtn += 'parent class: ' + self['parent'] + '\n'
 
@@ -776,10 +774,13 @@ class CppMethod( _CppMethod ):
     self['parameters'] - List of CppVariables
     """
     def show(self):
-        r = ['method name: %s (%s)' %(self['name'],self['debug']) ]
-        if self['returns']: r.append( 'returns: %s'%self['returns'] )
-        if self['parameters']: r.append( 'number arguments: %s' %len(self['parameters']))
-        if self['pure_virtual']: r.append( 'pure virtual: %s'%self['pure_virtual'] )
+        r = [f"method name: {self['name']} ({self['debug']})"]
+        if self['returns']:
+            r.append(f"returns: {self['returns']}")
+        if self['parameters']:
+            r.append(f"number arguments: {len(self['parameters'])}")
+        if self['pure_virtual']:
+            r.append(f"pure virtual: {self['pure_virtual']}")
         if self['constructor']: r.append( 'constructor' )
         if self['destructor']: r.append( 'destructor' )
         return '\n\t\t  '.join( r )
