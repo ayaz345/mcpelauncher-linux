@@ -20,17 +20,15 @@ def get_method_path(method):
         method_path = method["path"]
         if method_path.startswith("::"):
             method_path = method_path[2:]
-        return method_path
     else:
         method_path = method["namespace"]
         if method_path.endswith("::"):
             method_path = method_path[:-2]
-        return method_path
+
+    return method_path
 
 def get_method_wrapper_name(method):
-    method_name = method["name"]
-    if method["destructor"]:
-        method_name = "destructor";
+    method_name = "destructor" if method["destructor"] else method["name"]
     name = "_" + get_method_path(method).replace("::", "_") + "_" + method_name
     if name in wrapper_name_counter:
         wrapper_name_counter[name] += 1
@@ -41,10 +39,7 @@ def get_method_wrapper_name(method):
 
 def get_mangled_class_name(class_name):
     sp = class_name.split("::")
-    ret = ""
-    for p in sp:
-        ret += str(len(p)) + p
-    return ret
+    return "".join(str(len(p)) + p for p in sp)
 
 PRIMITIVE_TYPES = {
         "char": "c",
@@ -77,8 +72,7 @@ def get_mangled_type_name(type_name, substitutions):
 
     sp = re.findall(r"((unsigned\s*|signed\s*|long\s*|short\s*|[\w:]+)+|[*&<>,])", type_name)
     ret = []
-    last_type_start = []
-    last_type_start.append(0)
+    last_type_start = [0]
     for p in sp:
         if type(p) is tuple:
             p = p[0]
@@ -105,12 +99,12 @@ def get_mangled_type_name(type_name, substitutions):
             if p in substitutions:
                 subId = substitutions.index(p)
                 if subId > 0:
-                    ret.append("S" + str(subId - 1) + "_")
+                    ret.append(f"S{str(subId - 1)}_")
                 else:
                     ret.append("S_")
                 continue
             np = p.split("::")
-            if (np[0] == "std" or np[0] == "mcpe") and np[1] == "string":
+            if np[0] in ["std", "mcpe"] and np[1] == "string":
                 ret.append("Ss")
                 continue
             if np[0] == "std" and np[1] == "allocator":
@@ -142,8 +136,7 @@ def get_mangled_method(method):
     if len(method["parameters"]) == 0:
         ret += "v"
     else:
-        substitutions = []
-        substitutions.append(get_method_path(method))
+        substitutions = [get_method_path(method)]
         for param in method["parameters"]:
             ret += get_mangled_type_name(param["type"], substitutions)
     return ret
@@ -182,13 +175,12 @@ def process_method(method, is_class):
     params_str = ""
     params_with_names = ""
     params_for_call = ""
-    param_no = 1
     #if not method["static"]:
     #    params_str = method_path + "*"
     #    if method["const"]:
     #        params_str = method_path + " const*"
     #    params_for_call = "this"
-    for param in method["parameters"]:
+    for param_no, param in enumerate(method["parameters"], start=1):
         if len(params_str) > 0:
             params_str += ", "
             params_for_call += ", "
@@ -196,20 +188,39 @@ def process_method(method, is_class):
             params_with_names += ", "
         params_str += param["type"]
         params_with_names += param["type"] + " p" + str(param_no)
-        if param["type"].startswith("std::unique_ptr"):
-            params_for_call += "std::move(p" + str(param_no) + ")"
-        else:
-            params_for_call += "p" + str(param_no)
-        param_no += 1
+        params_for_call += (
+            f"std::move(p{str(param_no)})"
+            if param["type"].startswith("std::unique_ptr")
+            else f"p{str(param_no)}"
+        )
     ret_type = method["rtnType"]
     if ret_type.startswith("static "):
         ret_type = ret_type[len("static "):]
     if method["static"] or not is_class:
-        output("static " + ret_type + " (*" + wrapper_name + ")(" + params_str + ");")
+        output(f"static {ret_type} (*{wrapper_name})({params_str});")
     else:
-        output("static " + ret_type + " (" + method_path + "::*" + wrapper_name + ")(" + params_str + ")" + (" const" if method["const"] else "") + ";")
-    output((ret_type + " " if not method["constructor"] and not method["destructor"] else "") + method_path + "::" + ("~" if method["destructor"] else "") + method["name"] + "(" + params_with_names + ")" + (" const" if method["const"] else "") + " {")
-    has_return = ret_type != "void" and ret_type != ""
+        output(
+            f"static {ret_type} ({method_path}::*{wrapper_name})({params_str})"
+            + (" const" if method["const"] else "")
+            + ";"
+        )
+    output(
+        (
+            f"{ret_type} "
+            if not method["constructor"] and not method["destructor"]
+            else ""
+        )
+        + method_path
+        + "::"
+        + ("~" if method["destructor"] else "")
+        + method["name"]
+        + "("
+        + params_with_names
+        + ")"
+        + (" const" if method["const"] else "")
+        + " {"
+    )
+    has_return = ret_type not in ["void", ""]
     if method["static"] or not is_class:
         output("    " + ("return " if has_return else "") + wrapper_name + "(" + params_for_call + ");")
     else:
@@ -222,14 +233,14 @@ def process_method(method, is_class):
 
 
 def process_header(file):
-    print("Processing file " + file)
+    print(f"Processing file {file}")
     cpp_header = cppheaderparser.CppHeader(file)
 
     for function in cpp_header.functions:
         process_method(function, False)
 
     for class_name in cpp_header.classes:
-        print("Processing class " + class_name)
+        print(f"Processing class {class_name}")
         class_data = cpp_header.classes[class_name]
         # pprint(class_data)
 
@@ -250,11 +261,14 @@ def process_header(file):
                 m_type = member["type"]
                 if m_type.startswith("static "):
                     m_type = m_type[len("static "):]
-                output(m_type + " " + class_name_with_namespace + "::" + member["name"] + ";")
-                symbol_list.append({
-                    "name": class_name_with_namespace + "::" + member["name"],
-                    "symbol": mangled_name
-                })
+                output(f"{m_type} {class_name_with_namespace}::" + member["name"] + ";")
+                symbol_list.append(
+                    {
+                        "name": f"{class_name_with_namespace}::"
+                        + member["name"],
+                        "symbol": mangled_name,
+                    }
+                )
 
         for method_vis in class_data["methods"]:
             for method in class_data["methods"][method_vis]:
@@ -270,23 +284,22 @@ def generate_init_func():
         output("    if (" + symbol["name"] + " == nullptr) Log::error(\"MinecraftSymbols\", \"Unresolved symbol: %s\", \"" + symbol["symbol"] + "\");")
     output("}")
 
-out_file = open("../src/minecraft/symbols.cpp", "w")
-output("// This file was automatically generated using tools/process_headers.py")
-output("// Generated on " + datetime.datetime.utcnow().strftime("%a %b %d %Y %H:%M:%S UTC"))
-output("")
-output("#include <hybris/dlfcn.h>")
-output("#include \"../common/log.h\"")
-output("")
-header_dir = "../src/minecraft/"
-for file in os.listdir(header_dir):
-    file_path = os.path.join(header_dir, file)
-    if not os.path.isfile(file_path) or not file.endswith(".h"):
-        continue
-    if file == "symbols.h":
-        continue
-    output("#include \"" + file + "\"")
-    process_header(file_path)
+with open("../src/minecraft/symbols.cpp", "w") as out_file:
+    output("// This file was automatically generated using tools/process_headers.py")
+    output("// Generated on " + datetime.datetime.utcnow().strftime("%a %b %d %Y %H:%M:%S UTC"))
     output("")
-generate_init_func()
-out_file.close()
+    output("#include <hybris/dlfcn.h>")
+    output("#include \"../common/log.h\"")
+    output("")
+    header_dir = "../src/minecraft/"
+    for file in os.listdir(header_dir):
+        file_path = os.path.join(header_dir, file)
+        if not os.path.isfile(file_path) or not file.endswith(".h"):
+            continue
+        if file == "symbols.h":
+            continue
+        output("#include \"" + file + "\"")
+        process_header(file_path)
+        output("")
+    generate_init_func()
 
